@@ -4,11 +4,16 @@ library(stringr)
 library(lubridate)
 library(tidyr)
 library(sf)
+library(httr)
+library(ows4R)
 library(writexl)
+
 
 # -------------------------------------------------------------------------------------------------------------------- #
 #### 00 - dados brutos ####
 # -------------------------------------------------------------------------------------------------------------------- #
+
+# rodar caso esteja em proxy -> httr::set_config( use_proxy(url="your.proxy.ip", port="port", username="user",password="password") )
 
 dltemp <- tempfile()
 
@@ -23,14 +28,15 @@ IUPop_01_popDistrito <- read_csv2( dltemp , locale = locale( encoding = "ISO8859
   # abrir em colunas
   pivot_wider( names_from = c( ano , sexo , faixa_etaria ) , values_from = populacao )
 
-##### macroárea #####
+###### macroárea ######
+# arquivo local pois problemas topológicos impossibilitam, por enquanto, uso do WFS
 IUPop_02_macroarea <- st_read( "./geo.gpkg" , layer = "3_2014-PDE_Macroárea"  ) |>
   select( mc_sigla ) |>
+  mutate( area_macroarea_ha = as.numeric( st_area( geom ) ) ) |>
   st_make_valid() |>
   st_transform(31983) |>
   st_cast( "POLYGON" )
 
-##### distritos e subprefeituras #####
 IUPop_03_distrito <- st_read( "./geo.gpkg" , layer = "5_Distrito"  ) |>
   mutate( 
           ds_codigo = str_pad( ds_codigo , width = 2 , side = "left" , pad = "0" ),
@@ -91,11 +97,11 @@ IUPop_13_pop_macroarea_bruto <- st_intersection( IUPop_12_macroarea , IUPop_03_d
           DT_ANO = Ano,
           TX_GENERO = Gênero,
           TX_FAIXAETARIA = Idade,
-          NR_POPULACAO = População,
+          QT_POPULACAO = População,
         ) |>
   ##### reordenando #####
   select(
-          SG_MACROAREA,CD_SUBPREF,NM_SUBPREF,CD_DISTRITO,SG_DISTRITO,NM_DISTRITO,DT_ANO,TX_GENERO,TX_FAIXAETARIA,NR_POPULACAO
+          SG_MACROAREA,CD_SUBPREF,NM_SUBPREF,CD_DISTRITO,SG_DISTRITO,NM_DISTRITO,DT_ANO,TX_GENERO,TX_FAIXAETARIA,QT_POPULACAO
         )
 
 ##### salvando em CSV e RDS para consultas #####
@@ -109,11 +115,21 @@ IUPop_13_pop_macroarea_bruto |> write_rds( "13_população-por-macroárea_2000-2
 
 ###### 21 - população por macroárea ######
 IUPop_21_pop_macroarea <- IUPop_13_pop_macroarea_bruto |>
-  group_by( Ano , mc_sigla ) |>
-  summarize( População = round(sum(População),0) ) |>
+  group_by( DT_ANO , SG_MACROAREA ) |>
+  summarize( QT_POPULACAO = round(sum(QT_POPULACAO),0) ) |>
   ungroup() |>
-  pivot_wider( names_from = mc_sigla , values_from = População )
+  pivot_wider( names_from = SG_MACROAREA , values_from = QT_POPULACAO )
   
 IUPop_21_pop_macroarea |> write_xlsx( "21_população-por-macroárea_2000-2050.xlsx" )
 
+###### 22 - proporção da população da cidade por macroárea ######
+pop2020 <- IUPop_13_pop_macroarea_bruto |>
+  filter( DT_ANO == "2020" ) |> 
+  summarize( sum(QT_POPULACAO) ) |>
+  pull()
 
+IUPop_13_pop_macroarea_bruto |> 
+  filter( DT_ANO == "2020" ) |> 
+  group_by( SG_MACROAREA ) |>
+  summarise( `VL_POPULACAO_%_TOTAL` = sum( QT_POPULACAO )/pop2020 ) |>
+  write_xlsx( "22_população-por-macroárea-proporcional.xlsx" )
