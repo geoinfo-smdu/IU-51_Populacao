@@ -55,7 +55,7 @@ IUPop_01_popDistrito <- read_csv2( dltemp , locale = locale( encoding = "ISO8859
   # abrir em colunas
   pivot_wider( names_from = c( ano , sexo , faixa_etaria ) , values_from = populacao )
 
-###### macroárea ######
+##### macroárea #####
 # arquivo local pois problemas topológicos impossibilitam, por enquanto, uso do WFS
 IUPop_02_macroarea <- le_WFS( "geoportal:pde2014_v_mcrar_02_map" ) |>
   select( sg_macro_divisao_pde ) |>
