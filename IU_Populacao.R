@@ -13,6 +13,33 @@ library(writexl)
 #### 00 - dados brutos ####
 # -------------------------------------------------------------------------------------------------------------------- #
 
+##### função para ler camadas WFS GeoSampa #####
+GeoSampaWFS <- "http://wfs.geosampa.prefeitura.sp.gov.br/geoserver/geoportal/wfs?"
+bwk_client <- WFSClient$new(GeoSampaWFS, serviceVersion = "2.0.0")
+
+GeoSampaWFS_lista <- bwk_client$getFeatureTypes() |>
+  purrr::map_chr(function(x){x$getName()}) |> sort() |> tibble::enframe()
+
+View(GeoSampaWFS_lista)
+
+le_WFS <- function( camada , adicional = "" ){
+  
+  link <- paste0( 
+    "http://wfs.geosampa.prefeitura.sp.gov.br/geoserver/geoportal/wfs?" ,  
+    "service=WFS",
+    "&version=2.0.0",
+    "&request=GetFeature",
+    "&typename=",
+    camada,
+    "&outputFormat=application/json",
+    adicional
+  )
+  
+  return(st_read(link))
+  
+  
+}
+
 # rodar caso esteja em proxy -> httr::set_config( use_proxy(url="your.proxy.ip", port="port", username="user",password="password") )
 
 dltemp <- tempfile()
@@ -30,22 +57,29 @@ IUPop_01_popDistrito <- read_csv2( dltemp , locale = locale( encoding = "ISO8859
 
 ###### macroárea ######
 # arquivo local pois problemas topológicos impossibilitam, por enquanto, uso do WFS
-IUPop_02_macroarea <- st_read( "./geo.gpkg" , layer = "3_2014-PDE_Macroárea"  ) |>
-  select( mc_sigla ) |>
+IUPop_02_macroarea <- le_WFS( "geoportal:pde2014_v_mcrar_02_map" ) |>
+  select( sg_macro_divisao_pde ) |>
   mutate( area_macroarea_ha = as.numeric( st_area( geom ) ) ) |>
   st_make_valid() |>
   st_transform(31983) |>
   st_cast( "POLYGON" )
 
-IUPop_03_distrito <- st_read( "./geo.gpkg" , layer = "5_Distrito"  ) |>
+IUPop_03_distrito <- le_WFS( "geoportal:distrito_municipal" ) |>
   mutate( 
-          ds_codigo = str_pad( ds_codigo , width = 2 , side = "left" , pad = "0" ),
-          )
+          cd_distrito_municipal = str_pad( cd_distrito_municipal , width = 2 , side = "left" , pad = "0" ),
+          ) |>
+  left_join( le_WFS( "geoportal:subprefeitura" ) |> st_drop_geometry() |> select( cd_identificador_subprefeitura , nm_subprefeitura ) ) |>
+  select( contains("distrito_municipal") , nm_subprefeitura )
 
 ##### ZOE, ZEPAM e ZEP - áreas sem população #####
-IUPop_04_ZOE <- st_read( "./geo.gpkg" , layer = "4_2016-LPUOS_ZOE"  ) |> st_make_valid() |> st_transform(31983)
-IUPop_05_ZEPAM <- st_read( "./geo.gpkg" , layer = "4_2016-LPUOS_ZEPAM"  ) |> st_make_valid() |> st_transform(31983)
-IUPop_06_ZEP <- st_read( "./geo.gpkg" , layer = "4_2016-LPUOS_ZEP"  ) |> st_make_valid() |> st_transform(31983)
+zon_temp <- le_WFS( 
+                    "geoportal:zoneamento_2016_map1" , 
+                    "&Filter=<Filter><Or><PropertyIsEqualTo><PropertyName>tx_zoneamento_perimetro</PropertyName><Literal>ZOE</Literal></PropertyIsEqualTo><PropertyIsEqualTo><PropertyName>tx_zoneamento_perimetro</PropertyName><Literal>ZEPAM</Literal></PropertyIsEqualTo><PropertyIsEqualTo><PropertyName>tx_zoneamento_perimetro</PropertyName><Literal>ZEP</Literal></PropertyIsEqualTo></Or></Filter>"
+                    ) |> select( tx_zoneamento_perimetro )
+
+IUPop_04_ZOE <- zon_temp |> filter( tx_zoneamento_perimetro == "ZOE" )
+IUPop_05_ZEPAM <- zon_temp |> filter( tx_zoneamento_perimetro == "ZEPAM" )
+IUPop_06_ZEP <- zon_temp |> filter( tx_zoneamento_perimetro == "ZEP" )
 
 # -------------------------------------------------------------------------------------------------------------------- #
 #### 10 - processamentos - associando população com macroárea ####
@@ -64,20 +98,20 @@ IUPop_13_pop_macroarea_bruto <- st_intersection( IUPop_12_macroarea , IUPop_03_d
         ) |>
   st_drop_geometry() |>
   ##### área total distrito = soma dos pedaços cruzados com macroárea #####
-  group_by( ds_nome ) |>
+  group_by( nm_distrito_municipal ) |>
   mutate( area_ha = sum( area_ha_intersect ) ) |>
   ungroup() |>
   ##### % de sobreposição entre cada distrito e macroárea #####
   mutate(
           area_ha_intersect_porcent = area_ha_intersect / area_ha
         ) |>
-  arrange( mc_sigla , ds_codigo ) |>
-  rename( distrito = ds_nome ) |>
+  arrange( sg_macro_divisao_pde , cd_distrito_municipal ) |>
+  rename( distrito = nm_distrito_municipal ) |>
   ##### juntando população #####
   left_join( IUPop_01_popDistrito |> select(-c(codigo_distrito)) ) |>
   ##### esticando tabela #####
   pivot_longer( 
-                cols = -c(mc_sigla:area_ha_intersect_porcent) , 
+                cols = -c(sg_macro_divisao_pde:area_ha_intersect_porcent) , 
                 names_to = c("Ano", "Gênero", "Idade"),
                 names_pattern = "(.*)_(.*)_(.*)", 
                 values_to = "População" 
@@ -88,10 +122,9 @@ IUPop_13_pop_macroarea_bruto <- st_intersection( IUPop_12_macroarea , IUPop_03_d
   select( -contains( "area_ha" ) ) |>
   ##### renomeando nos padrões GEOINFO #####
   rename(
-          SG_MACROAREA = mc_sigla,
-          CD_DISTRITO = ds_codigo,
-          NM_SUBPREF = ds_subpref,
-          CD_SUBPREF = ds_cd_sub,
+          SG_MACROAREA = sg_macro_divisao_pde,
+          CD_DISTRITO = cd_distrito_municipal,
+          NM_SUBPREF = nm_subprefeitura,
           SG_DISTRITO = ds_sigla,
           NM_DISTRITO = distrito,
           DT_ANO = Ano,
@@ -101,7 +134,7 @@ IUPop_13_pop_macroarea_bruto <- st_intersection( IUPop_12_macroarea , IUPop_03_d
         ) |>
   ##### reordenando #####
   select(
-          SG_MACROAREA,CD_SUBPREF,NM_SUBPREF,CD_DISTRITO,SG_DISTRITO,NM_DISTRITO,DT_ANO,TX_GENERO,TX_FAIXAETARIA,QT_POPULACAO
+          SG_MACROAREA,NM_SUBPREF,CD_DISTRITO,SG_DISTRITO,NM_DISTRITO,DT_ANO,TX_GENERO,TX_FAIXAETARIA,QT_POPULACAO
         )
 
 ##### salvando em CSV e RDS para consultas #####
