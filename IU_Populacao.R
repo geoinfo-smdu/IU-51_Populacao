@@ -40,8 +40,6 @@ le_WFS <- function( camada , adicional = "" ){
   
 }
 
-# rodar caso esteja em proxy -> httr::set_config( use_proxy(url="your.proxy.ip", port="port", username="user",password="password") )
-
 dltemp <- tempfile()
 
 ##### 2000-2050 - microdados SEADE #####
@@ -58,11 +56,12 @@ IUPop_01_popDistrito <- read_csv2( dltemp , locale = locale( encoding = "ISO8859
 ##### macroárea #####
 # arquivo local pois problemas topológicos impossibilitam, por enquanto, uso do WFS
 IUPop_02_macroarea <- le_WFS( "geoportal:pde2014_v_mcrar_02_map" ) |>
-  select( sg_macro_divisao_pde ) |>
-  mutate( area_macroarea_ha = as.numeric( st_area( geom ) ) ) |>
+  group_by( sg_macro_divisao_pde ) |>
+  summarize() |>
+  ungroup() |>
+  mutate( area_macroarea_ha = as.numeric( st_area( geometry ) ) / 10000 ) |>
   st_make_valid() |>
-  st_transform(31983) |>
-  st_cast( "POLYGON" )
+  st_transform(31983)
 
 IUPop_03_distrito <- le_WFS( "geoportal:distrito_municipal" ) |>
   mutate( 
@@ -94,7 +93,7 @@ IUPop_12_macroarea <- IUPop_02_macroarea |>
 IUPop_13_pop_macroarea_bruto <- st_intersection( IUPop_12_macroarea , IUPop_03_distrito  ) |>
   ##### área de sobreposição entre cada distrito e macroárea #####
   mutate( 
-          area_ha_intersect = round(as.numeric(st_area(geometry)),5)
+          area_ha_intersect = round(as.numeric(st_area(geometry)),5)/10000
         ) |>
   st_drop_geometry() |>
   ##### área total distrito = soma dos pedaços cruzados com macroárea #####
@@ -125,12 +124,13 @@ IUPop_13_pop_macroarea_bruto <- st_intersection( IUPop_12_macroarea , IUPop_03_d
           SG_MACROAREA = sg_macro_divisao_pde,
           CD_DISTRITO = cd_distrito_municipal,
           NM_SUBPREF = nm_subprefeitura,
-          SG_DISTRITO = ds_sigla,
+          SG_DISTRITO = sg_distrito_municipal,
           NM_DISTRITO = distrito,
           DT_ANO = Ano,
           TX_GENERO = Gênero,
           TX_FAIXAETARIA = Idade,
           QT_POPULACAO = População,
+          VL_MACROAREA_AREA_HA = 
         ) |>
   ##### reordenando #####
   select(
@@ -147,15 +147,21 @@ IUPop_13_pop_macroarea_bruto |> write_rds( "13_população-por-macroárea_2000-2
 # -------------------------------------------------------------------------------------------------------------------- #
 
 ###### 21 - população por macroárea ######
-IUPop_21_pop_macroarea <- IUPop_13_pop_macroarea_bruto |>
+IUPop_13_pop_macroarea_bruto |>
   group_by( DT_ANO , SG_MACROAREA ) |>
   summarize( QT_POPULACAO = round(sum(QT_POPULACAO),0) ) |>
   ungroup() |>
-  pivot_wider( names_from = SG_MACROAREA , values_from = QT_POPULACAO )
-  
-IUPop_21_pop_macroarea |> write_xlsx( "21_população-por-macroárea_2000-2050.xlsx" )
+  pivot_wider( names_from = SG_MACROAREA , values_from = QT_POPULACAO ) |>
+  write_xlsx( "21_população-por-macroárea_2000-2050.xlsx" )
 
-###### 22 - proporção da população da cidade por macroárea ######
+IUPop_13_pop_macroarea_bruto |>
+  filter( DT_ANO == "2020" ) |>
+  group_by( SG_MACROAREA ) |>
+  summarize( QT_POPULACAO = round(sum(QT_POPULACAO),0) ) |>
+  ungroup() |>
+  write_xlsx( "21_população-por-macroárea_2020.xlsx" )
+
+###### 22 - proporção da população da cidade por macroárea em 2020 ######
 pop2020 <- IUPop_13_pop_macroarea_bruto |>
   filter( DT_ANO == "2020" ) |> 
   summarize( sum(QT_POPULACAO) ) |>
@@ -165,4 +171,33 @@ IUPop_13_pop_macroarea_bruto |>
   filter( DT_ANO == "2020" ) |> 
   group_by( SG_MACROAREA ) |>
   summarise( `VL_POPULACAO_%_TOTAL` = sum( QT_POPULACAO )/pop2020 ) |>
-  write_xlsx( "22_população-por-macroárea-proporcional.xlsx" )
+  write_xlsx( "22_população-por-macroárea-proporcional_2020.xlsx" )
+
+
+###### 23 - densidade demográfica por macroárea em 2020 ######
+IUPop_13_pop_macroarea_bruto |>
+  filter( DT_ANO == 2020 ) |> 
+  left_join(
+            IUPop_02_macroarea |> 
+              st_drop_geometry() |> 
+              rename( SG_MACROAREA = sg_macro_divisao_pde )
+          ) |> 
+  group_by( SG_MACROAREA ) |>
+  summarize( VL_DENSDEMO_HAB_HA = sum(QT_POPULACAO)/median( area_macroarea_ha ) ) |>
+  ungroup() |>
+  write_xlsx( "23_densidade-demográfica-por-macroárea_2020.xlsx" )
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
