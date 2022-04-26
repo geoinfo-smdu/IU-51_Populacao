@@ -59,7 +59,13 @@ IUPop_02_macroarea <- le_WFS( "geoportal:pde2014_v_mcrar_02_map" ) |>
   group_by( sg_macro_divisao_pde ) |>
   summarize() |>
   ungroup() |>
-  mutate( area_macroarea_ha = as.numeric( st_area( geometry ) ) / 10000 ) |>
+  mutate( 
+          area_macroarea_ha = as.numeric( st_area( geometry ) ) / 10000,
+          sg_macro_divisao_pde = case_when( 
+                                            sg_macro_divisao_pde == "MRVURA" ~ "MRVRA",
+                                            TRUE ~ sg_macro_divisao_pde
+                                          ),
+          ) |>
   st_make_valid() |>
   st_transform(31983)
 
